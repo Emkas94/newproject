@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Результаты транскрипции - TurboScribe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-6">Результаты транскрипции</h1>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <div class="mb-4">
+                <span class="font-semibold">ID задачи:</span> {{ job_id }}
+            </div>
+            <div class="mb-4">
+                <span class="font-semibold">Статус:</span> 
+                <span class="px-2 py-1 rounded {% if job.status == 'completed' %}bg-green-100 text-green-800{% elif job.status == 'failed' %}bg-red-100 text-red-800{% else %}bg-blue-100 text-blue-800{% endif %}">
+                    {{ job.status }}
+                </span>
+            </div>
+            <div class="mb-4">
+                <span class="font-semibold">Прогресс:</span> 
+                <div class="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                    <div class="bg-blue-600 h-2.5 rounded-full" style="width: {{ job.progress * 100 }}%"></div>
+                </div>
+                <span class="text-sm text-gray-600">{{ (job.progress * 100) | round(1) }}%</span>
+            </div>
+            {% if job.stage %}
+            <div class="mb-4">
+                <span class="font-semibold">Этап:</span> {{ job.stage }}
+            </div>
+            {% endif %}
+        </div>
+        
+        {% if job.status == 'completed' and vtt_path %}
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-bold mb-4">Видео с субтитрами</h2>
+            <video 
+                id="video-player"
+                controls 
+                class="w-full"
+                preload="metadata"
+            >
+                <track 
+                    kind="subtitles" 
+                    src="/artifacts/{{ job_id }}/merged.vtt" 
+                    srclang="ru" 
+                    label="Русский"
+                    default
+                >
+                Ваш браузер не поддерживает видео.
+            </video>
+        </div>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <h2 class="text-xl font-bold mb-4">Поиск в транскрипции</h2>
+            <div class="flex gap-2 mb-4">
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Введите поисковый запрос..."
+                    class="flex-1 px-3 py-2 border rounded-md"
+                >
+                <button 
+                    onclick="searchTranscript()"
+                    class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
+                >
+                    Найти
+                </button>
+            </div>
+            <div id="search-results" class="mt-4"></div>
+        </div>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-bold mb-4">Артефакты</h2>
+            <div class="space-y-2">
+                {% if job.artifacts %}
+                    {% for artifact in job.artifacts %}
+                    <div class="flex items-center justify-between p-2 bg-gray-50 rounded">
+                        <span>{{ artifact.split('/')[-1] }}</span>
+                        <a 
+                            href="/artifacts/{{ job_id }}/{{ artifact.split('/')[-1] }}"
+                            download
+                            class="text-blue-600 hover:underline"
+                        >
+                            Скачать
+                        </a>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <p class="text-gray-500">Артефакты готовятся...</p>
+                {% endif %}
+            </div>
+        </div>
+        {% elif job.status == 'processing' %}
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <p class="text-center text-gray-600">Обработка в процессе...</p>
+            <div hx-get="/v1/jobs/{{ job_id }}/progress" hx-trigger="every 1s" hx-swap="none"></div>
+        </div>
+        {% elif job.status == 'failed' %}
+        <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4">
+            <p class="font-bold">Ошибка обработки</p>
+            <p class="mt-1">{{ job.error }}</p>
+        </div>
+        {% endif %}
+    </div>
+    
+    <script>
+        function searchTranscript() {
+            const query = document.getElementById('search-input').value;
+            if (!query) return;
+            
+            // TODO: Implement search API call
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = `<p class="text-gray-600">Поиск: "${query}" (API не реализован в scaffold)</p>`;
+        }
+        
+        // Click-to-seek functionality
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('search-result')) {
+                const timestamp = parseFloat(e.target.dataset.timestamp);
+                const video = document.getElementById('video-player');
+                if (video) {
+                    video.currentTime = timestamp;
+                    video.play();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
