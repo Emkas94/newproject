@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TurboScribe - Транскрипция аудио и видео</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-6">TurboScribe</h1>
+        
+        {% if show_warning %}
+        <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 mb-6">
+            <p class="font-bold">Внимание: Зависимости не установлены</p>
+            <p class="text-sm mt-1">
+                Для работы требуется установить faster-whisper и ctranslate2.
+                {% if not ctranslate2_available %}
+                <br>• ctranslate2 недоступен
+                {% endif %}
+                {% if not faster_whisper_available %}
+                <br>• faster-whisper недоступен
+                {% endif %}
+                <br><br>
+                <strong>Решение:</strong> Используйте Docker или Python 3.12 venv с установленными зависимостями.
+                См. README.md для инструкций.
+            </p>
+        </div>
+        {% endif %}
+        
+        <form 
+            hx-post="/v1/jobs"
+            hx-target="#result"
+            hx-swap="innerHTML"
+            hx-headers='{"Content-Type": "multipart/form-data"}'
+            enctype="multipart/form-data"
+            class="bg-white p-6 rounded-lg shadow-md"
+        >
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Файл для загрузки</label>
+                <input 
+                    type="file" 
+                    name="source" 
+                    accept="audio/*,video/*"
+                    class="w-full px-3 py-2 border rounded-md"
+                    required
+                >
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Режим обработки</label>
+                <select name="mode" class="w-full px-3 py-2 border rounded-md">
+                    <option value="fast">Быстрый</option>
+                    <option value="balance" selected>Сбалансированный</option>
+                    <option value="accurate">Точный</option>
+                </select>
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Язык</label>
+                <input 
+                    type="text" 
+                    name="language" 
+                    placeholder="auto (автоопределение)"
+                    class="w-full px-3 py-2 border rounded-md"
+                >
+            </div>
+            
+            <div class="mb-4">
+                <label class="flex items-center">
+                    <input type="checkbox" name="diarization" value="true" class="mr-2">
+                    <span>Диаризация спикеров</span>
+                </label>
+            </div>
+            
+            <div class="mb-4">
+                <label class="flex items-center">
+                    <input type="checkbox" name="ocr_enabled" value="true" class="mr-2">
+                    <span>OCR на кадрах</span>
+                </label>
+            </div>
+            
+            <div class="mb-4">
+                <label class="flex items-center">
+                    <input type="checkbox" name="denoise" value="true" class="mr-2">
+                    <span>Улучшение аудио (подавление шума)</span>
+                </label>
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Перевод на язык</label>
+                <input 
+                    type="text" 
+                    name="translate_to" 
+                    placeholder="en, ru, etc."
+                    class="w-full px-3 py-2 border rounded-md"
+                >
+            </div>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Ключевые слова (фильтр)</label>
+                <input 
+                    type="text" 
+                    name="keywords" 
+                    placeholder="важно,критично"
+                    class="w-full px-3 py-2 border rounded-md"
+                >
+            </div>
+            
+            <button 
+                type="submit"
+                class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
+            >
+                Начать транскрипцию
+            </button>
+        </form>
+        
+        <div id="result" class="mt-6">
+            <div id="result-content"></div>
+        </div>
+        
+        <script>
+            document.body.addEventListener('htmx:afterRequest', function(evt) {
+                if (evt.detail.xhr.status === 200 || evt.detail.xhr.status === 201) {
+                    const response = JSON.parse(evt.detail.xhr.responseText);
+                    if (response.id) {
+                        window.location.href = '/jobs/' + response.id;
+                    }
+                }
+            });
+        </script>
+    </div>
+</body>
+</html>

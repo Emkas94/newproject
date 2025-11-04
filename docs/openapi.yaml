@@ -1,0 +1,495 @@
+openapi: 3.0.3
+info:
+  title: TurboScribe Transcription API
+  version: 1.0.0
+  description: |
+    API для автоматической транскрипции аудио и видео с поддержкой 
+    диаризации, OCR, перевода и экспорта.
+  contact:
+    name: API Support
+    email: support@turboscribe.example
+
+servers:
+  - url: https://api.turboscribe.example/v1
+    description: Production
+  - url: http://localhost:8000/v1
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+paths:
+  /jobs:
+    post:
+      summary: Создать задачу транскрипции
+      description: |
+        Создает новую задачу транскрипции из загруженного файла, URL или YouTube ссылки.
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - source
+              properties:
+                source:
+                  oneOf:
+                    - type: string
+                      format: binary
+                      description: Файл для загрузки
+                    - type: string
+                      format: uri
+                      description: URL или YouTube ссылка
+                  example: "https://example.com/video.mp4"
+                mode:
+                  type: string
+                  enum: [fast, balance, accurate]
+                  default: balance
+                  description: Режим обработки
+                language:
+                  type: string
+                  nullable: true
+                  description: Язык (auto для автоопределения)
+                  example: "ru"
+                diarization:
+                  type: boolean
+                  default: false
+                  description: Включить диаризацию спикеров
+                ocr_enabled:
+                  type: boolean
+                  default: false
+                  description: Включить OCR на кадрах
+                ocr_interval:
+                  type: integer
+                  default: 5
+                  description: Интервал OCR в секундах
+                denoise:
+                  type: boolean
+                  default: false
+                  description: Улучшение аудио (подавление шума)
+                translate_to:
+                  type: string
+                  nullable: true
+                  description: Целевой язык для перевода
+                  example: "en"
+                keywords:
+                  type: string
+                  nullable: true
+                  description: Ключевые слова для фильтрации (через запятую)
+                  example: "важно,критично"
+      responses:
+        '201':
+          description: Задача создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+    get:
+      summary: Список задач
+      description: Получить список задач пользователя с фильтрацией
+      operationId: listJobs
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [created, queued, processing, completed, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Список задач
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+  /jobs/{job_id}:
+    get:
+      summary: Статус задачи
+      description: Получить статус и прогресс задачи
+      operationId: getJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Информация о задаче
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      summary: Отменить задачу
+      description: Отменить выполняющуюся задачу
+      operationId: cancelJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Задача отменена
+        '400':
+          description: Задача уже завершена или отменена
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /jobs/{job_id}/progress:
+    get:
+      summary: Поток прогресса (SSE)
+      description: Server-Sent Events поток для отслеживания прогресса
+      operationId: getJobProgress
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SSE поток
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: progress
+                  data: {"stage": "asr", "progress": 0.5, "message": "Обработка аудио..."}
+
+  /jobs/{job_id}/artifacts:
+    get:
+      summary: Список артефактов
+      description: Получить список доступных артефактов с подписанными URL
+      operationId: getJobArtifacts
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Список артефактов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Artifact'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /jobs/bulk:
+    post:
+      summary: Пакетная обработка
+      description: Создать до 50 задач одновременно
+      operationId: createBulkJobs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - jobs
+              properties:
+                jobs:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required:
+                      - source
+                    properties:
+                      source:
+                        type: string
+                        description: URL или путь к файлу
+                      mode:
+                        type: string
+                        enum: [fast, balance, accurate]
+                        default: balance
+                      language:
+                        type: string
+                        nullable: true
+                      diarization:
+                        type: boolean
+                        default: false
+      responses:
+        '201':
+          description: Задачи созданы
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /jobs/{job_id}/search:
+    post:
+      summary: Поиск в транскрипции
+      description: Поиск ключевых слов в транскрипции с временными метками
+      operationId: searchJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: Поисковый запрос
+                max_results:
+                  type: integer
+                  default: 100
+      responses:
+        '200':
+          description: Результаты поиска
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks:
+    post:
+      summary: Подписаться на webhooks
+      description: Настроить webhook для получения уведомлений о завершении задач
+      operationId: subscribeWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - events
+              properties:
+                url:
+                  type: string
+                  format: uri
+                events:
+                  type: array
+                  items:
+                    type: string
+                    enum: [job.completed, job.failed]
+      responses:
+        '201':
+          description: Webhook подписан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+
+components:
+  schemas:
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [created, queued, downloading, processing, asr, diarization, ocr, translation, exporting, completed, failed, cancelled]
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        stage:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        mode:
+          type: string
+        language:
+          type: string
+          nullable: true
+        duration:
+          type: number
+          nullable: true
+          description: Длительность в секундах
+        error:
+          type: string
+          nullable: true
+
+    Artifact:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [asr_srt, ocr_srt, merged_srt, merged_vtt, output_json, asr_txt, ocr_txt, merged_txt, keywords_srt, keywords_vtt, results_zip]
+        url:
+          type: string
+          format: uri
+          description: Подписанный URL с TTL
+        expires_at:
+          type: string
+          format: date-time
+        size:
+          type: integer
+          description: Размер в байтах
+
+    SearchResult:
+      type: object
+      properties:
+        text:
+          type: string
+        start:
+          type: number
+          format: float
+          description: Начало в секундах
+        end:
+          type: number
+          format: float
+          description: Конец в секундах
+        speaker:
+          type: string
+          nullable: true
+        highlights:
+          type: array
+          items:
+            type: integer
+          description: Позиции символов для подсветки
+
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+          description: Секрет для подписи payload
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Неверный запрос
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    Unauthorized:
+      description: Требуется аутентификация
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    RateLimitExceeded:
+      description: Превышен лимит запросов
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              retry_after:
+                type: integer
