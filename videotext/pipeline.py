@@ -222,7 +222,10 @@ class Pipeline:
         keywords: str
     ) -> List[Dict[str, Any]]:
         """Filter segments containing keywords."""
-        keyword_list = [k.strip().lower() for k in keywords.split(',')]
+        keyword_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
+
+        if not keyword_list:
+            return []
         
         filtered = []
         for segment in segments:
