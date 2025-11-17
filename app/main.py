@@ -5,7 +5,7 @@ import os
 import uuid
 import asyncio
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -62,7 +62,67 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 app.mount("/artifacts", StaticFiles(directory=str(ARTIFACTS_DIR)), name="artifacts")
 
 # Job storage (in-memory for scaffold; replace with DB)
-jobs: dict[str, dict] = {}
+
+
+class InMemoryJobStore:
+    """Lightweight in-memory job registry."""
+
+    def __init__(self) -> None:
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+
+    def create_job(self, job_id: str, mode: str, language: Optional[str]) -> Dict[str, Any]:
+        job = {
+            "id": job_id,
+            "status": "created",
+            "progress": 0.0,
+            "stage": None,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "completed_at": None,
+            "error": None,
+            "mode": mode,
+            "language": language,
+            "duration": None,
+            "artifacts": [],
+        }
+        self._jobs[job_id] = job
+        return job
+
+    def get_job(self, job_id: str) -> Dict[str, Any]:
+        return self._jobs.get(job_id)
+
+    def require_job(self, job_id: str) -> Dict[str, Any]:
+        job = self.get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Задача не найдена")
+        return job
+
+    def update_job(self, job_id: str, **fields: Any) -> None:
+        job = self.require_job(job_id)
+        job.update(fields)
+        job["updated_at"] = datetime.utcnow()
+
+    def mark_completed(self, job_id: str, artifacts: List[str]) -> None:
+        job = self.require_job(job_id)
+        job.update(
+            {
+                "status": "completed",
+                "stage": None,
+                "progress": 1.0,
+                "completed_at": datetime.utcnow(),
+                "artifacts": artifacts,
+            }
+        )
+        job["updated_at"] = datetime.utcnow()
+
+    def mark_failed(self, job_id: str, error: Exception) -> None:
+        self.update_job(job_id, status="failed", error=str(error), progress=0.0)
+
+    def mark_cancelled(self, job_id: str) -> None:
+        self.update_job(job_id, status="cancelled")
+
+
+jobs = InMemoryJobStore()
 
 
 # Pydantic models
@@ -91,57 +151,46 @@ class JobResponse(BaseModel):
 
 class PipelineProgressCallback(PipelineCallback):
     """Callback for pipeline progress updates."""
-    
-    def __init__(self, job_id: str):
+
+    def __init__(self, job_store: InMemoryJobStore, job_id: str):
+        self.job_store = job_store
         self.job_id = job_id
-    
+
+    def _update(self, **fields: Any) -> None:
+        self.job_store.update_job(self.job_id, **fields)
+
     def on_start(self, job_id: str, config: dict) -> None:
-        jobs[job_id]['status'] = 'processing'
-        jobs[job_id]['stage'] = 'initializing'
-        jobs[job_id]['progress'] = 0.0
-    
+        self._update(status="processing", stage="initializing", progress=0.0)
+
     def on_audio_extracted(self, job_id: str, audio_path: str, duration: float) -> None:
-        jobs[job_id]['stage'] = 'audio_extracted'
-        jobs[job_id]['progress'] = 0.1
-        jobs[job_id]['duration'] = duration
-    
+        self._update(stage="audio_extracted", progress=0.1, duration=duration)
+
     def on_asr_started(self, job_id: str) -> None:
-        jobs[job_id]['stage'] = 'asr'
-        jobs[job_id]['progress'] = 0.2
-    
+        self._update(stage="asr", progress=0.2)
+
     def on_asr_completed(self, job_id: str, segments: list) -> None:
-        jobs[job_id]['progress'] = 0.6
-    
+        self._update(progress=0.6)
+
     def on_diarization_completed(self, job_id: str, segments: list) -> None:
-        jobs[job_id]['stage'] = 'diarization'
-        jobs[job_id]['progress'] = 0.7
-    
+        self._update(stage="diarization", progress=0.7)
+
     def on_ocr_started(self, job_id: str) -> None:
-        jobs[job_id]['stage'] = 'ocr'
-        jobs[job_id]['progress'] = 0.5
-    
+        self._update(stage="ocr", progress=0.5)
+
     def on_ocr_completed(self, job_id: str, segments: list) -> None:
-        jobs[job_id]['progress'] = 0.65
-    
+        self._update(progress=0.65)
+
     def on_translation_completed(self, job_id: str, segments: list) -> None:
-        jobs[job_id]['stage'] = 'translation'
-        jobs[job_id]['progress'] = 0.9
-    
+        self._update(stage="translation", progress=0.9)
+
     def on_export_started(self, job_id: str) -> None:
-        jobs[job_id]['stage'] = 'exporting'
-        jobs[job_id]['progress'] = 0.95
-    
+        self._update(stage="exporting", progress=0.95)
+
     def on_done(self, job_id: str, artifacts: list) -> None:
-        jobs[job_id]['status'] = 'completed'
-        jobs[job_id]['stage'] = None
-        jobs[job_id]['progress'] = 1.0
-        jobs[job_id]['completed_at'] = datetime.utcnow()
-        jobs[job_id]['artifacts'] = artifacts
-    
+        self.job_store.mark_completed(job_id, artifacts)
+
     def on_error(self, job_id: str, error: Exception) -> None:
-        jobs[job_id]['status'] = 'failed'
-        jobs[job_id]['error'] = str(error)
-        jobs[job_id]['progress'] = 0.0
+        self.job_store.mark_failed(job_id, error)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -160,10 +209,7 @@ async def index(request: Request):
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
 async def job_view(request: Request, job_id: str):
     """Job results page."""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    
-    job = jobs[job_id]
+    job = jobs.require_job(job_id)
     vtt_path = None
     
     # Find VTT file
@@ -212,22 +258,10 @@ async def create_job(
         raise HTTPException(status_code=400, detail="Необходимо указать файл или URL")
     
     # Create job record
-    jobs[job_id] = {
-        'id': job_id,
-        'status': 'created',
-        'progress': 0.0,
-        'stage': None,
-        'created_at': datetime.utcnow(),
-        'updated_at': datetime.utcnow(),
-        'completed_at': None,
-        'error': None,
-        'mode': mode,
-        'language': language,
-        'duration': None
-    }
+    jobs.create_job(job_id, mode, language)
     
     # Start pipeline in background
-    callback = PipelineProgressCallback(job_id)
+    callback = PipelineProgressCallback(jobs, job_id)
     pipeline = Pipeline(callback=callback, output_dir=str(ARTIFACTS_DIR))
     
     def run_pipeline():
@@ -251,28 +285,24 @@ async def create_job(
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, run_pipeline)
     
-    return JobResponse(**jobs[job_id])
+    return JobResponse(**jobs.require_job(job_id))
 
 
 @app.get("/v1/jobs/{job_id}")
 async def get_job(job_id: str):
     """Get job status."""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    
-    return JobResponse(**jobs[job_id])
+    return JobResponse(**jobs.require_job(job_id))
 
 
 @app.get("/v1/jobs/{job_id}/progress")
 async def get_job_progress(job_id: str):
     """SSE stream for job progress."""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    
+    jobs.require_job(job_id)
+
     async def event_stream():
         last_progress = -1
         while True:
-            job = jobs.get(job_id)
+            job = jobs.get_job(job_id)
             if not job:
                 break
             
@@ -294,10 +324,7 @@ async def get_job_progress(job_id: str):
 @app.get("/v1/jobs/{job_id}/artifacts")
 async def get_job_artifacts(job_id: str):
     """Get job artifacts."""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    
-    job = jobs[job_id]
+    job = jobs.require_job(job_id)
     artifacts = job.get('artifacts', [])
     
     return {
@@ -315,15 +342,11 @@ async def get_job_artifacts(job_id: str):
 @app.delete("/v1/jobs/{job_id}")
 async def cancel_job(job_id: str):
     """Cancel a job."""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-    
-    job = jobs[job_id]
+    job = jobs.require_job(job_id)
     if job['status'] in ['completed', 'failed', 'cancelled']:
         raise HTTPException(status_code=400, detail="Задача уже завершена")
-    
-    job['status'] = 'cancelled'
-    job['updated_at'] = datetime.utcnow()
+
+    jobs.mark_cancelled(job_id)
     
     return {"status": "cancelled"}
 
